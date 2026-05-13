@@ -1,0 +1,21 @@
+services:
+  frontend:
+    build: ./frontend
+    ports:
+      - "5173:5173"
+    depends_on:
+      - gateway
+
+  gateway:
+    build: ./Services/gateway
+    ports:
+      - "5000:5000"
+    env_file:
+      - ./Services/gateway/.env.development
+
+  auth-service:
+    build: ./Services/Auth-services
+    ports:
+      - "5001:5001"
+    env_file:
+      - ./Services/Auth-services/.env.development

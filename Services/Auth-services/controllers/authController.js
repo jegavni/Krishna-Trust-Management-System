@@ -1,54 +1,84 @@
-
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import User from "../models/User.js";
 import cloudinary from "../config/cloudinary.js";
-import multer from "multer";
+import crypto from "crypto";
+import sendEmail from "../utils/sendEmail.js";
 
-const storage = multer.memoryStorage();
-const upload = multer({ storage });
+const JWT_SECRET = process.env.JWT_SECRET;
+const isProd = process.env.NODE_ENV === "production";
 
-// JWT secret from .env
-const JWT_SECRET = process.env.JWT_SECRET || "supersecret";
 
-// GET /api/auth/check
-export const checkAuth = (req, res) => {
-  const token = req.cookies.token;
-  if (!token) return res.status(401).json({ message: "Not logged in" });
-
+export const getModules = async (
+  req,
+  res
+) => {
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    res.json({ loggedIn: true, userId: decoded.id });
-  } catch (err) {
-    res.status(401).json({ message: "Invalid token" });
+    const modules = await Module.find({
+      enabled: true,
+    });
+
+    res.json(modules);
+  } catch (error) {
+    res.status(500).json({
+      message: error.message,
+    });
   }
 };
 
+/* ---------------- CHECK AUTH ---------------- */
+
+// 
+export const checkAuth = (req, res) => {
+  console.log("Cookie length:", req.headers.cookie?.length);
+
+  const token = req.cookies.token;
+
+  if (!token) {
+    return res.status(401).json({
+      loggedIn: false,
+      message: "No token",
+    });
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+
+    res.json({
+      loggedIn: true,
+      user: decoded,
+    });
+  } catch (err) {
+    res.status(401).json({
+      loggedIn: false,
+      message: "Invalid token",
+    });
+  }
+};
+
+/* ---------------- REGISTER ---------------- */
+
 export const register = async (req, res) => {
   try {
-    console.log("REQ BODY:", req.body);  // Text fields
-    console.log("REQ FILE:", req.file);  // Profile picture
-
     const { name, email, phone, location, role, password } = req.body;
 
-    // Hash password
     const hash = await bcrypt.hash(password, 10);
 
     let imageUrl = "";
-    if (req.file) {
-      imageUrl = await new Promise((resolve, reject) => {
-        const stream = cloudinary.uploader.upload_stream(
-          { folder: "profiles" },
-          (error, result) => {
-            if (error) return reject(error);
-            resolve(result.secure_url);
-          }
-        );
-        stream.end(req.file.buffer);
-      });
-    }
 
-    // Create user in MongoDB
+    // if (req.file) {
+    //   imageUrl = await new Promise((resolve, reject) => {
+    //     const stream = cloudinary.uploader.upload_stream(
+    //       { folder: "profiles" },
+    //       (err, result) => {
+    //         if (err) return reject(err);
+    //         resolve(result.secure_url);
+    //       }
+    //     );
+    //     stream.end(req.file.buffer);
+    //   });
+    // }
+
     const user = await User.create({
       name,
       email,
@@ -56,79 +86,206 @@ export const register = async (req, res) => {
       location,
       role,
       password: hash,
-      profilePic: imageUrl,
     });
 
-    // Create JWT token
     const token = jwt.sign(
       {
         id: user._id,
         role: user.role,
-        email: user.email,
+        email: user.email
       },
       JWT_SECRET,
       { expiresIn: "1d" }
     );
 
-    // Send token in response (optional: cookie)
+    /* IMPORTANT COOKIE SETTINGS */
     res.cookie("token", token, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
-      maxAge: 60 * 60 * 1000, // 1 hour
+      secure: isProd,
+      sameSite: isProd ? "none" : "lax",
+      path: "/",
+      maxAge: 24 * 60 * 60 * 1000
     });
 
-    // Send response with user info (excluding password)
-    const { password: pwd, ...userData } = user._doc;
-    res.json({ user: userData, token });
+    const { password: _, ...userData } = user._doc;
+
+    res.json({
+      success: true,
+      user: userData
+    });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: err.message });
+    res.status(500).json({
+      success: false,
+      message: err.message
+    });
+  }
+};
+
+/* ---------------- LOGIN ---------------- */
+
+export const login = async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    const user = await User.findOne({ email });
+
+    if (!user) {
+      return res.status(401).json({ message: "User not found" });
+    }
+
+    const match = await bcrypt.compare(password, user.password);
+
+    if (!match) {
+      return res.status(401).json({ message: "Invalid password" });
+    }
+
+    const token = jwt.sign(
+      { id: user._id, role: user.role },
+      JWT_SECRET,
+      { expiresIn: "1d" }
+    );
+
+res.cookie("token", token, {
+  httpOnly: true,
+  secure: isProd,
+  sameSite: isProd ? "none" : "lax",
+  path: "/",
+  maxAge: 24 * 60 * 60 * 1000
+});
+    /* COOKIE FIX */
+
+
+    res.json({
+      success: true,
+      message: "Login successful",
+      user: {
+        id: user._id,
+        email: user.email,
+        role: user.role
+      }
+    });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      message: err.message
+    });
+  }
+};
+
+// Forgot Password
+
+export const forgotPassword = async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    const user = await User.findOne({ email });
+console.log("User found for email:", email, user ? "Yes" : "No");
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found",
+      });
+    }
+
+    const resetToken = crypto
+      .randomBytes(32)
+      .toString("hex");
+
+    user.resetPasswordToken = crypto
+      .createHash("sha256")
+      .update(resetToken)
+      .digest("hex");
+
+    user.resetPasswordExpire =
+      Date.now() + 15 * 60 * 1000;
+
+    await user.save();
+
+    const resetUrl =
+      `${process.env.CLIENT_URL}/reset-password/${resetToken}`;
+
+    await sendEmail({
+      receiver: user.email,
+      subject: "Password Reset",
+      text:`
+        <h2>Password Reset Request</h2>
+        <p>Click the link below:</p>
+        <a href="${resetUrl}">
+          Reset Password
+        </a>
+      `
+    });
+
+    res.json({
+      success: true,
+      message: "Reset email sent",
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
   }
 };
 
 
-export const login = async (req, res) => {
+export const resetPassword = async (req, res) => {
+ console.log("Reset token received:", req.params.token);
+  try {
+    const hashedToken = crypto
+      .createHash("sha256")
+      .update(req.params.token)
+      .digest("hex");
 
-  const { email, password } = req.body;
-  console.log("Login attempt:", email);
+    const user = await User.findOne({
+      resetPasswordToken: hashedToken,
 
-  const user = await User.findOne({ email });
+      resetPasswordExpire: {
+        $gt: Date.now(),
+      },
+    });
 
-  if (!user)
-    return res.status(400).json({ message: "User not found" });
+    if (!user) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid or expired token",
+      });
+    }
 
-  const match = await bcrypt.compare(password, user.password);
+    user.password = await bcrypt.hash(
+      req.body.password,
+      10
+    );
 
-  if (!match)
-    return res.status(400).json({ message: "Invalid password" });
+    user.resetPasswordToken = undefined;
+    user.resetPasswordExpire = undefined;
 
-  const token = jwt.sign(
-    { id: user._id },
-    process.env.JWT_SECRET,
-    { expiresIn: "1d" }
-  );
+    await user.save();
 
-  res.cookie("token", token, {
-    httpOnly: true,
-    sameSite: "lax",
-    maxAge: 60 * 60 * 1000, // 1 hour
-  });
-
-  res.json({ message: "Login successful" });
-
+    res.json({
+      success: true,
+      message: "Password updated",
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
 };
+
+/* ---------------- LOGOUT ---------------- */
 
 export const logout = (req, res) => {
   res.clearCookie("token", {
     httpOnly: true,
-    sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
+    secure: isProd,
+    sameSite: isProd ? "none" : "lax",
+    path: "/"
   });
-  console.log("User logged out");
 
-  return res.status(200).json({
+  res.json({
     success: true,
-    message: "Logged out successfully",
+    message: "Logged out"
   });
 };

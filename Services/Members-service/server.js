@@ -12,7 +12,6 @@ dotenv.config({ path: envFile });
 
 const app = express();
 
-app.use(cors());
 app.use(express.json());
 
 mongoose
@@ -21,12 +20,17 @@ mongoose
   .catch((err) => console.log(err));
 app.use(
   cors({
-    origin: process.env.CLIENT_URL,
+    origin: process.env.CLIENT_URL || "https://ktm-vg51.onrender.com",
     credentials: true
   })
 );
 app.use("/", memberRoutes);
 
-app.listen(process.env.PORT, () => {
-  console.log(`Member Service running on port ${process.env.PORT}`);
+// Health check
+app.get("/health", (req, res) => res.json({ status: "ok" }));
+
+const PORT = process.env.PORT || 5002;
+
+app.listen(PORT, () => {
+  console.log(`Member Service running on port ${PORT}`);
 });

@@ -1,17 +1,27 @@
 import jwt from "jsonwebtoken";
 
-const authMiddleware = (req, res, next) => {
+const JWT_SECRET = process.env.JWT_SECRET;
+
+export const verifyToken = (req, res, next) => {
   const token = req.cookies.token;
 
-  if (!token) return res.status(401).json("Unauthorized");
+  if (!token) {
+    return res.status(401).json({
+      success: false,
+      message: "No token found",
+    });
+  }
 
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const decoded = jwt.verify(token, JWT_SECRET);
+
     req.user = decoded;
+
     next();
-  } catch {
-    res.status(401).json("Invalid token");
+  } catch (error) {
+    return res.status(401).json({
+      success: false,
+      message: "Invalid token",
+    });
   }
 };
-
-export default authMiddleware;
